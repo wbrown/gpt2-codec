@@ -1,0 +1,6 @@
+[submodule "vendor/cJSON"]
+	path = vendor/cJSON
+	url = git@github.com:DaveGamble/cJSON.git
+[submodule "vendor/libc_hsearch_r"]
+	path = vendor/libc_hsearch_r
+	url = git@github.com:mikhail-j/libc_hsearch_r.git
