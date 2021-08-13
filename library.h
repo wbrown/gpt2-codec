@@ -42,9 +42,9 @@ struct BPERankedPair {
     char *repr;
     uint16_t rank;
     uint64_t hash;
-    char* left;
+    char *left;
     size_t left_len;
-    char* right;
+    char *right;
     size_t right_len;
 };
 
@@ -52,15 +52,18 @@ typedef struct BPERankedPair rankedBigram_t;
 
 typedef struct codecTablesStruct codecTables_t;
 
-enum CODEC_STATUS readJson(char *filename, cJSON **json);
+enum CODEC_STATUS readJson(const char *filename, cJSON **json);
 
-enum CODEC_STATUS readEncoderDefinitions(char *filename, codecTables_t **tables);
+enum CODEC_STATUS readEncoderDefinitions(const char *filename,
+                                         codecTables_t **tables);
 
-enum CODEC_STATUS readBpeVocabulary(char *filename, codecTables_t **tables);
-void buildUnicodeByteTable(codecTables_t* *tables);
+enum CODEC_STATUS readBpeVocabulary(const char *filename,
+                                    codecTables_t **tables);
+
+void buildUnicodeByteTable(codecTables_t **tables);
+
 enum CODEC_STATUS InitializeGPT2Codec();
-enum CODEC_STATUS EncodeTextFile(const char *path);
 
-void hello(void);
+enum CODEC_STATUS EncodeTextFile(const char *path);
 
 #endif //GPT2_CODEC_LIBRARY_H

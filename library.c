@@ -3,11 +3,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <regex.h>
-#include <stdbool.h>
 
 codecTables_t *codecTables;
 
-unsigned int genHash(const char *s, unsigned int len, unsigned int hval) {
+// ==========================================================================
+// Hashtable implementation specifically for bigrams
+// ==========================================================================
+
+unsigned int genHash(const char *s, const unsigned int len,
+                     unsigned int hval) {
     unsigned int count;
 
     if (hval == 0) hval = len;
@@ -35,7 +39,7 @@ uint64_t hashBigram(rankedBigram_t *item) {
     return hval;
 }
 
-uint64_t cmpBigramKey(rankedBigram_t *item, char *key) {
+uint64_t cmpBigramKey(const rankedBigram_t *item, const char *key) {
     if (strncmp(item->left, key, item->left_len) == 0
         && strncmp(item->right, &(key[item->left_len + 1]),
                    item->right_len) == 0) {
@@ -45,10 +49,10 @@ uint64_t cmpBigramKey(rankedBigram_t *item, char *key) {
     }
 }
 
-int search(rankedBigram_t *item, ACTION action, ENTRY **retval,
-           struct hsearch_data *htab) {
+unsigned int hashLookup(rankedBigram_t *item, ENTRY **retval,
+                        unsigned int *hash, const struct hsearch_data *htab) {
     struct hsearch_data lhtab = *htab;
-    unsigned int hval;
+    unsigned int hval = *hash;
     unsigned int idx;
 
     hval = hashBigram(item);
@@ -62,10 +66,12 @@ int search(rankedBigram_t *item, ACTION action, ENTRY **retval,
                 /* Set errno to EINVAL, because 'retval' is a NULL pointer
 				(invalid pointer for returning a hash table ENTRY). */
                 errno = EINVAL;
+                *hash = hval;
                 return 0;
             } else {
                 *retval = &lhtab.table[idx].entry;
-                return 1;
+                *hash = hval;
+                return idx;
             }
         }
 
@@ -92,52 +98,62 @@ int search(rankedBigram_t *item, ACTION action, ENTRY **retval,
                     /* Set errno to EINVAL, because 'retval' is a NULL pointer
                     (invalid pointer for returning a hash table ENTRY). */
                     errno = EINVAL;
+                    *hash = hval;
                     return 0;
                 } else {
                     *retval = &lhtab.table[idx].entry;
-                    return 1;
+                    *hash = hval;
+                    return idx;
                 }
             }
         } while (lhtab.table[idx].used);
     }
-
-    /* An empty bucket has been found. */
-    if (action == ENTER) {
-        /* If table is full and another entry should be entered return
-       with error.  */
-        if (htab->filled == htab->size) {
-            errno = ENOMEM;
-            /* Prevent the dereferencing of a NULL pointer. */
-            if (retval != NULL) {
-                *retval = NULL;
-            }
-            return 0;
-        }
-
-        htab->table[idx].used = hval;
-        htab->table[idx].entry.key = item->repr;
-        htab->table[idx].entry.data = item;
-        ++htab->filled;
-
-        /* Ignore 'retval' if 'action' is 'ENTER' and 'retval' is a
-                NULL pointer. */
-        if (retval != NULL) {
-            /* Prevent the dereferencing of a NULL pointer. */
-            *retval = &htab->table[idx].entry;
-        }
-        return 1;
-    }
-
     errno = ESRCH;
     /* Prevent the dereferencing of a NULL pointer. */
     if (retval != NULL) {
         *retval = NULL;
     }
-    return 0;
+    *hash = hval;
+    return idx;
 }
 
-enum CODEC_STATUS readJson(char *filename, cJSON **json) {
-    char *buffer = 0;
+
+int hashInsert(rankedBigram_t *item, ENTRY **retval,
+               struct hsearch_data *htab) {
+    unsigned int hval = 0;
+    unsigned int idx = hashLookup(item, retval, &hval, htab);
+
+    /* If table is full and another entry should be entered return
+       with error.  */
+    if (htab->filled == htab->size) {
+        errno = ENOMEM;
+        /* Prevent the dereferencing of a NULL pointer. */
+        if (retval != NULL) {
+            *retval = NULL;
+        }
+        return 0;
+    }
+
+    htab->table[idx].used = hval;
+    htab->table[idx].entry.key = item->repr;
+    htab->table[idx].entry.data = item;
+    ++htab->filled;
+
+    /* Ignore 'retval' if 'action' is 'ENTER' and 'retval' is a
+            NULL pointer. */
+    if (retval != NULL) {
+        /* Prevent the dereferencing of a NULL pointer. */
+        *retval = &htab->table[idx].entry;
+    }
+    return 1;
+}
+
+// ==========================================================================
+// Initialization of various data structures for the codec
+// ==========================================================================
+
+enum CODEC_STATUS readJson(const char *filename, cJSON **json) {
+    char *buffer;
     long length;
     FILE *f = fopen(filename, "rb");
     if (!f) {
@@ -162,14 +178,16 @@ enum CODEC_STATUS readJson(char *filename, cJSON **json) {
     if (*json == NULL) {
         const char *error_ptr = cJSON_GetErrorPtr();
         if (error_ptr != NULL) {
-            fprintf(stderr, "JSON error in `%s` before: %s\n", filename, error_ptr);
+            fprintf(stderr, "JSON error in `%s` before: %s\n", filename,
+                    error_ptr);
         }
         return ERR_JSON_FAILED;
     }
     return CODEC_SUCCESS;
 }
 
-void buildTableRange(codecTables_t **table, uint8_t begin, uint8_t end) {
+void buildTableRange(codecTables_t **table, const uint8_t begin,
+                     const uint8_t end) {
     for (uint8_t b = begin; b <= end; b++) {
         (*table)->bytesToUnicode[b] = (uint16_t) b;
         (*table)->unicodeToBytes[(uint16_t) b] = b;
@@ -177,7 +195,8 @@ void buildTableRange(codecTables_t **table, uint8_t begin, uint8_t end) {
     }
 }
 
-void fillUnicodePoints(uint16_t *uct, codecTables_t **table, uint8_t begin, uint8_t end) {
+void fillUnicodePoints(uint16_t *uct, codecTables_t **table,
+                       const uint8_t begin, const uint8_t end) {
     for (uint8_t b = begin; b <= end; b++) {
         (*table)->bytesToUnicode[b] = (uint16_t) 256 + *uct;
         (*table)->unicodeToBytes[(uint16_t) 256 + *uct] = b;
@@ -196,7 +215,8 @@ void buildUnicodeByteTable(codecTables_t **table) {
     fillUnicodePoints(&uct, table, 173, 173);
 }
 
-enum CODEC_STATUS readBpeVocabulary(char *filename, codecTables_t **table) {
+enum CODEC_STATUS readBpeVocabulary(const char *filename,
+                                    codecTables_t **table) {
     FILE *f = fopen(filename, "rb");
     if (!f) {
         return ERR_BPE_FOPEN;
@@ -224,22 +244,23 @@ enum CODEC_STATUS readBpeVocabulary(char *filename, codecTables_t **table) {
         char *divisor = strchr(entry->repr, ' ');
         entry->left_len = divisor - entry->repr;
         entry->left = strndup(line, entry->left_len);
-        entry->right = strchr(entry->repr, ' ') + 1;
+        entry->right = divisor + 1;
         entry->right_len = strlen(entry->right);
         ENTRY *ep;
-        search(entry, ENTER, &ep, &(*table)->bpeRanks);
+        hashInsert(entry, &ep, &(*table)->bpeRanks);
         bpeRank++;
     }
     return CODEC_SUCCESS;
 }
 
-enum CODEC_STATUS readEncoderDefinitions(char *filename, codecTables_t **tables) {
+enum CODEC_STATUS readEncoderDefinitions(const char *filename,
+                                         codecTables_t **tables) {
     *tables = malloc(sizeof(codecTables_t));
 
     cJSON *encoderJson = malloc(sizeof(cJSON));
     if (readJson(filename, &encoderJson) != CODEC_SUCCESS) {
         return ERR_JSON_FAILED;
-    };
+    }
     int numEntries = cJSON_GetArraySize(encoderJson);
     hcreate_r(numEntries, &(*tables)->toToken);
     const cJSON *entry;
@@ -255,12 +276,16 @@ enum CODEC_STATUS readEncoderDefinitions(char *filename, codecTables_t **tables)
     return CODEC_SUCCESS;
 }
 
+// ==========================================================================
+// Bigram functions
+// ==========================================================================
 
-void printBigramRepr(rankedBigram_t *bigram) {
+
+void printBigramRepr(const rankedBigram_t *bigram) {
     if (bigram->left != NULL) {
-        printf("Rank: %d Left[%d]: %.*s Right[%d]: %.*s\n", bigram->rank,
-               bigram->left_len, bigram->left_len, bigram->left,
-               bigram->right_len, bigram->right_len, bigram->right);
+        printf("Rank: %d Left[%zu]: %.*s Right[%zdu]: %.*s\n", bigram->rank,
+               bigram->left_len, (int) bigram->left_len, bigram->left,
+               bigram->right_len, (int) bigram->right_len, bigram->right);
     }
 }
 
@@ -272,44 +297,7 @@ void showBigrams(rankedBigram_t *bigrams, size_t size) {
     printf("====\n");
 }
 
-
-size_t insertBigram(rankedBigram_t *bigrams, rankedBigram_t *newBigram, size_t size) {
-    uint64_t i = 0;
-    uint64_t j = size;
-    while (i < j) {
-        uint64_t h = ((uint64_t) (i + j) >> 1);
-        if (bigrams[h].rank <= newBigram->rank) {
-            i = h + 1;
-        } else {
-            j = h;
-        }
-    }
-    // showBigrams(bigrams, size);
-    if (i == size) {
-        memcpy(&bigrams[i], newBigram, sizeof(rankedBigram_t));
-        // showBigrams(bigrams, size);
-        return size + 1;
-    } else {
-        rankedBigram_t candidateSlot = bigrams[i];
-        if (newBigram->left_len == candidateSlot.left_len &&
-            newBigram->right_len == candidateSlot.right_len &&
-            strncmp(newBigram->left, candidateSlot.left, newBigram->left_len) == 0 &&
-            strncmp(newBigram->right, candidateSlot.right, newBigram->right_len) == 0) {
-            return size;
-        } else {
-            // printBigramRepr(&bigrams[i]);
-            //printf("Size: %d, copying %d bytes, %p -- %p.\n", size, sizeof(rankedBigram_t) * size, &bigrams,
-            //       &bigrams[i + 1]);
-            memmove(&bigrams[i + 1], &bigrams[i], sizeof(rankedBigram_t) * size);
-            memcpy(&bigrams[i], newBigram, sizeof(rankedBigram_t));
-            // showBigrams(bigrams, size);
-            return size + 1;
-        }
-    }
-}
-
-
-size_t rankBigrams(const codecTables_t *tables, size_t bigramsDsSz,
+size_t rankBigrams(const codecTables_t *tables, const size_t bigramsDsSz,
                    rankedBigram_t *bigrams, size_t *numBigrams) {
     int currBigram = 0;
     size_t highestBigram = 0;
@@ -330,8 +318,10 @@ size_t rankBigrams(const codecTables_t *tables, size_t bigramsDsSz,
         }
         *numBigrams += 1;
         ENTRY *ep;
-        int search_ret = search(&(bigrams[currBigram]), FIND, &ep, &(tables->bpeRanks));
-        if (search_ret) {
+        unsigned int hash = 0;
+        hashLookup(&(bigrams[currBigram]),
+                   &ep, &hash, &(tables->bpeRanks));
+        if (ep != NULL) {
             rankedBigram_t *matchBigram = (rankedBigram_t *) &(*ep->data);
             bigrams[currBigram].rank = matchBigram->rank;
             bigrams[currBigram].repr = matchBigram->repr;
@@ -344,22 +334,11 @@ size_t rankBigrams(const codecTables_t *tables, size_t bigramsDsSz,
         }
         currBigram++;
         //printBigramRepr(&newRankedBigram);
-        // discoveredBigrams = insertBigram(bigrams, &newRankedBigram, discoveredBigrams);
     }
     // printf("Number of bigrams: %zu\n", *numBigrams);
-    // wordPtr[currLen] = '\0';
     // showBigrams(bigrams, bigramsDsSz);
     return highestBigram;
 }
-
-/* rankedBigram_t *getTopBigram(codecTables_t tables, char *word, long long numBigrams,
-                             rankedBigram_t *bigrams) {
-    numBigrams = getRankedPairs(tables, word, numBigrams, bigrams);
-    if (numBigrams == 0) {
-        return NULL;
-    }
-    return &bigrams[0];
-} */
 
 void u8_inc(char *s, int *i) {
     (void) (isutf(s[++(*i)]) || isutf(s[++(*i)]) ||
@@ -428,13 +407,16 @@ int scanRight(rankedBigram_t *bigrams, size_t start, size_t *max) {
 }
 
 
-size_t toBPE(const codecTables_t *tables, char *s, long long numchars, rankedBigram_t *bigrams) {
+size_t toBPE(const codecTables_t *tables, char *s, long long numchars,
+             rankedBigram_t *bigrams) {
     int leftIdx, rightIdx;
     size_t numBigrams = 0;
     size_t bigrams_ct = initBPE(bigrams, s, numchars);
-    size_t highestRankedIdx = rankBigrams(tables, bigrams_ct, bigrams, &numBigrams);
+    size_t highestRankedIdx = rankBigrams(tables, bigrams_ct, bigrams,
+                                          &numBigrams);
     rankedBigram_t *highestBigram = &(bigrams[highestRankedIdx]);
-    while (highestBigram->rank != 65535 && highestBigram->rank != 0 && numBigrams > 1) {
+    while (highestBigram->rank != 65535 && highestBigram->rank != 0 &&
+           numBigrams > 1) {
         // Scan backwards for nearest non-null.
         leftIdx = scanLeft(bigrams, highestRankedIdx);
         rightIdx = scanRight(bigrams, highestRankedIdx, &bigrams_ct);
@@ -462,15 +444,20 @@ size_t toBPE(const codecTables_t *tables, char *s, long long numchars, rankedBig
         highestBigram->right_len = 0;
         highestBigram->rank = 0;
         highestBigram->hash = 0;
-        highestRankedIdx = rankBigrams(tables, bigrams_ct, bigrams, &numBigrams);
+        highestRankedIdx = rankBigrams(tables, bigrams_ct, bigrams,
+                                       &numBigrams);
         highestBigram = &(bigrams[highestRankedIdx]);
     }
     // showBigrams(bigrams, bigrams_ct);
     return numBigrams;
 }
 
+// ==========================================================================
+// Higher level functions
+// ==========================================================================
 
-size_t toUnicode(const codecTables_t *tables, const char *s, char **unicode, long long numchars) {
+size_t toUnicode(const codecTables_t *tables, const char *s, char **unicode,
+                 long long numchars) {
     *unicode = malloc(numchars * 2);
     char *dest = *unicode;
     for (int idx = 0; idx < numchars; idx++) {
@@ -505,7 +492,8 @@ void SplitWords(const codecTables_t *tables, const char *s) {
         regex_status = regexec(&tables->pattern, s_ptr, 1, &match, 0);
         char *unicode = NULL;
         size_t unicode_sz = toUnicode(tables, s_ptr, &unicode, match.rm_eo);
-        token_ct += toBPE(tables, unicode, unicode_sz, (rankedBigram_t *) &bigrams);
+        token_ct += toBPE(tables, unicode, unicode_sz,
+                          (rankedBigram_t *) &bigrams);
         free(unicode);
         //printf("%.*s\n", match.rm_eo, s_ptr);
         s_ptr += match.rm_eo;
