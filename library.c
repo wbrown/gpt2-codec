@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <regex.h>
+#include <stdbool.h>
 
 codecTables_t *codecTables;
 
@@ -52,7 +53,7 @@ uint64_t cmpBigramKey(const rankedBigram_t *item, const char *key) {
 unsigned int hashLookup(rankedBigram_t *item, ENTRY **retval,
                         unsigned int *hash, const struct hsearch_data *htab) {
     struct hsearch_data lhtab = *htab;
-    unsigned int hval = *hash;
+    unsigned int hval;
     unsigned int idx;
 
     hval = hashBigram(item);
@@ -289,54 +290,54 @@ void printBigramRepr(const rankedBigram_t *bigram) {
     }
 }
 
-void showBigrams(rankedBigram_t *bigrams, size_t size) {
+void showBigrams(rankedBigram_t *bigrams) {
     printf("====\n");
-    for (size_t idx = 0; idx < size; idx++) {
-        printBigramRepr(&(bigrams[idx]));
+    rankedBigram_t *bigram;
+    LL_FOREACH(bigrams, bigram) {
+        printBigramRepr(bigram);
     }
     printf("====\n");
 }
 
-size_t rankBigrams(const codecTables_t *tables, const size_t bigramsDsSz,
-                   rankedBigram_t *bigrams, size_t *numBigrams) {
-    int currBigram = 0;
-    size_t highestBigram = 0;
-    size_t highestBigramRank = 65535;
+rankedBigram_t *rankBigrams(const codecTables_t *tables,
+                            rankedBigram_t *bigrams, size_t *numDups,
+                            size_t *numBigrams) {
+    rankedBigram_t *highestBigram = NULL;
+    rankedBigram_t *currBigram = NULL;
     *numBigrams = 0;
-    while (currBigram < bigramsDsSz) {
-        if (bigrams[currBigram].left == NULL) {
-            currBigram++;
-            continue;
-        } else if (bigrams[currBigram].rank != 0) {
-            if (bigrams[currBigram].rank <= highestBigramRank) {
+    *numDups = 0;
+    DL_FOREACH(bigrams, currBigram) {
+        if (currBigram->rank != 0) {
+            if (highestBigram == NULL ||
+                currBigram->rank < highestBigram->rank) {
                 highestBigram = currBigram;
-                highestBigramRank = bigrams[currBigram].rank;
+            } else if (currBigram->hash == highestBigram->hash) {
+                (*numDups)++;
             }
             *numBigrams += 1;
-            currBigram++;
             continue;
         }
         *numBigrams += 1;
         ENTRY *ep;
         unsigned int hash = 0;
-        hashLookup(&(bigrams[currBigram]),
+        hashLookup(currBigram,
                    &ep, &hash, &(tables->bpeRanks));
         if (ep != NULL) {
             rankedBigram_t *matchBigram = (rankedBigram_t *) &(*ep->data);
-            bigrams[currBigram].rank = matchBigram->rank;
-            bigrams[currBigram].repr = matchBigram->repr;
-            if (matchBigram->rank < highestBigramRank) {
-                highestBigram = currBigram;
-                highestBigramRank = matchBigram->rank;
-            }
+            currBigram->rank = matchBigram->rank;
+            currBigram->repr = matchBigram->repr;
         } else {
-            bigrams[currBigram].rank = 65535;
+            currBigram->rank = 65535;
         }
-        currBigram++;
-        //printBigramRepr(&newRankedBigram);
+        if (highestBigram == NULL ||
+            currBigram->rank < highestBigram->rank) {
+            highestBigram = currBigram;
+        } else if (currBigram->hash == highestBigram->hash) {
+            (*numDups)++;
+        }
     }
     // printf("Number of bigrams: %zu\n", *numBigrams);
-    // showBigrams(bigrams, bigramsDsSz);
+    // showBigrams(bigrams);
     return highestBigram;
 }
 
@@ -345,13 +346,17 @@ void u8_inc(char *s, int *i) {
             isutf(s[++(*i)]) || ++(*i));
 }
 
-size_t initBPE(rankedBigram_t *bigrams, char *s, long long numchars) {
+rankedBigram_t *initBPE(rankedBigram_t *bigrams,
+                        const char *s, const size_t numBytes) {
+    rankedBigram_t *head = NULL;
     size_t bigrams_ct = 1;
     int c_idx = 1;
     bigrams[0].left = s;
     bigrams[0].hash = 0;
     bigrams[0].repr = NULL;
     bigrams[0].rank = 0;
+    bigrams[0].prev = NULL;
+    bigrams[0].next = NULL;
     if ((uint8_t) s[0] > 192) {
         c_idx += 2;
         bigrams[0].right = s + 2;
@@ -366,8 +371,9 @@ size_t initBPE(rankedBigram_t *bigrams, char *s, long long numchars) {
     } else {
         bigrams[0].right_len = 1;
     }
-
-    for (; c_idx < numchars; c_idx += 1) {
+    DL_APPEND(head, &(bigrams[0]));
+    for (; c_idx < numBytes; c_idx += 1) {
+        DL_APPEND(head, &(bigrams[bigrams_ct]));
         bigrams[bigrams_ct].rank = 0;
         bigrams[bigrams_ct].left = bigrams[bigrams_ct - 1].right;
         bigrams[bigrams_ct].left_len = bigrams[bigrams_ct - 1].right_len;
@@ -380,75 +386,58 @@ size_t initBPE(rankedBigram_t *bigrams, char *s, long long numchars) {
         } else {
             bigrams[bigrams_ct].right_len = 1;
         }
-        bigrams_ct += 1;
+        bigrams_ct++;
     }
-    return bigrams_ct;
+    return head;
 }
 
-int scanLeft(rankedBigram_t *bigrams, size_t start) {
-    int leftIdx;
-    for (leftIdx = ((int) start) - 1; leftIdx >= -1; leftIdx--) {
-        if (leftIdx == -1 || bigrams[leftIdx].left != NULL) break;
+bool mergeNeighboringBigrams(rankedBigram_t *head, rankedBigram_t *bigram) {
+    rankedBigram_t *prev = bigram->prev;
+    rankedBigram_t *next = bigram->next;
+    if (prev != NULL && bigram != head) {
+        prev->right_len += bigram->right_len;
+        prev->repr = NULL;
+        prev->rank = 0;
+        prev->hash = 0;
     }
-    return leftIdx;
+    if (next != NULL) {
+        next->left -= bigram->left_len;
+        next->left_len += bigram->left_len;
+        next->repr = NULL;
+        next->rank = 0;
+        next->hash = 0;
+    }
+    return true;
 }
 
-int scanRight(rankedBigram_t *bigrams, size_t start, size_t *max) {
-    int rightIdx;
-    for (rightIdx = ((int) start) + 1; rightIdx <= *max; rightIdx++) {
-        if (rightIdx == max) {
-            rightIdx = -1;
-            *max = start;
-            break;
-        }
-        if (bigrams[rightIdx].left != NULL) break;
-    }
-    return rightIdx;
-}
 
-
-size_t toBPE(const codecTables_t *tables, char *s, long long numchars,
-             rankedBigram_t *bigrams) {
-    int leftIdx, rightIdx;
+size_t toBPE(const codecTables_t *tables, const char *s, const size_t numBytes,
+             rankedBigram_t *bigramsBuffer) {
     size_t numBigrams = 0;
-    size_t bigrams_ct = initBPE(bigrams, s, numchars);
-    size_t highestRankedIdx = rankBigrams(tables, bigrams_ct, bigrams,
-                                          &numBigrams);
-    rankedBigram_t *highestBigram = &(bigrams[highestRankedIdx]);
+    size_t numDups = 0;
+    rankedBigram_t *bigrams = initBPE(bigramsBuffer, s, numBytes);
+    rankedBigram_t *highestBigram = rankBigrams(tables, bigrams,
+                                                &numDups, &numBigrams);
     while (highestBigram->rank != 65535 && highestBigram->rank != 0 &&
            numBigrams > 1) {
-        // Scan backwards for nearest non-null.
-        leftIdx = scanLeft(bigrams, highestRankedIdx);
-        rightIdx = scanRight(bigrams, highestRankedIdx, &bigrams_ct);
-        if (leftIdx == -1 && rightIdx == -1) {
-            break;
+        rankedBigram_t *bigram;
+        rankedBigram_t *tmpBigram;
+        DL_FOREACH_SAFE(highestBigram, bigram, tmpBigram) {
+            if (bigram->hash != 0 && highestBigram->hash == bigram->hash) {
+                mergeNeighboringBigrams(bigrams, bigram);
+                DL_DELETE(bigrams, bigram);
+                numBigrams--;
+                if (numDups > 0) {
+                    numDups--;
+                } else {
+                    break;
+                }
+            }
         }
-        if (leftIdx != -1) {
-            bigrams[leftIdx].right_len += highestBigram->right_len;
-            bigrams[leftIdx].repr = NULL;
-            bigrams[leftIdx].rank = 0;
-            bigrams[leftIdx].hash = 0;
-        }
-        if (rightIdx != -1) {
-            bigrams[rightIdx].left -= highestBigram->left_len;
-            bigrams[rightIdx].left_len += highestBigram->left_len;
-            bigrams[rightIdx].repr = NULL;
-            bigrams[rightIdx].hash = 0;
-            bigrams[rightIdx].rank = 0;
-        }
-        highestBigram->repr = NULL;
-        highestBigram->left = NULL;
-        highestBigram->right = NULL;
-        highestBigram->hash = 0;
-        highestBigram->left_len = 0;
-        highestBigram->right_len = 0;
-        highestBigram->rank = 0;
-        highestBigram->hash = 0;
-        highestRankedIdx = rankBigrams(tables, bigrams_ct, bigrams,
-                                       &numBigrams);
-        highestBigram = &(bigrams[highestRankedIdx]);
+        if (numBigrams <= 1) break;
+        highestBigram = rankBigrams(tables, bigrams, &numDups, &numBigrams);
     }
-    // showBigrams(bigrams, bigrams_ct);
+    //showBigrams(bigrams);
     return numBigrams;
 }
 

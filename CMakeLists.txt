@@ -9,7 +9,8 @@ set(BUILD_SHARED_AND_STATIC_LIBS on)
 
 LIST(APPEND VENDOR_INCLUDES
         vendor
-        vendor/libc_hsearch_r/include)
+        vendor/libc_hsearch_r/include
+        vendor/uthash/include)
 include_directories(${VENDOR_INCLUDES})
 
 add_library(gpt2_codec

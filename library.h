@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <search_hsearch_r.h>
 #include <regex.h>
+#include <utlist.h>
 
 #define isutf(c) (((c)&0xC0)!=0x80)
 
@@ -38,7 +39,7 @@ struct codecTablesStruct {
     regex_t pattern;
 };
 
-struct BPERankedPair {
+typedef struct BPERankedPair {
     char *repr;
     uint16_t rank;
     uint64_t hash;
@@ -46,9 +47,9 @@ struct BPERankedPair {
     size_t left_len;
     char *right;
     size_t right_len;
-};
-
-typedef struct BPERankedPair rankedBigram_t;
+    struct BPERankedPair *next;
+    struct BPERankedPair *prev;
+} rankedBigram_t;
 
 typedef struct codecTablesStruct codecTables_t;
 

@@ -4,3 +4,6 @@
 [submodule "vendor/libc_hsearch_r"]
 	path = vendor/libc_hsearch_r
 	url = git@github.com:mikhail-j/libc_hsearch_r.git
+[submodule "vendor/uthash"]
+	path = vendor/uthash
+	url = git@github.com:troydhanson/uthash.git
