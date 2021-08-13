@@ -47,36 +47,37 @@ uint64_t cmpBigramKey(rankedBigram_t *item, char *key) {
 
 int search(rankedBigram_t *item, ACTION action, ENTRY **retval,
            struct hsearch_data *htab) {
+    struct hsearch_data lhtab = *htab;
     unsigned int hval;
     unsigned int idx;
 
     hval = hashBigram(item);
-    idx = hval % htab->size + 1;
+    idx = hval % lhtab.size + 1;
 
-    if (htab->table[idx].used) {
+    if (lhtab.table[idx].used) {
         /* Further action might be required according to the action value. */
-        if (htab->table[idx].used == hval
-            && cmpBigramKey(item, htab->table[idx].entry.key) == 0) {
+        if (lhtab.table[idx].used == hval
+            && cmpBigramKey(item, lhtab.table[idx].entry.key) == 0) {
             if (retval == NULL) {
                 /* Set errno to EINVAL, because 'retval' is a NULL pointer
 				(invalid pointer for returning a hash table ENTRY). */
                 errno = EINVAL;
                 return 0;
             } else {
-                *retval = &htab->table[idx].entry;
+                *retval = &lhtab.table[idx].entry;
                 return 1;
             }
         }
 
         /* Second hash function, as suggested in [Knuth] */
-        unsigned int hval2 = 1 + hval % (htab->size - 2);
+        unsigned int hval2 = 1 + hval % (lhtab.size - 2);
         unsigned int first_idx = idx;
 
         do {
             /* Because SIZE is prime this guarantees to step through all
                    available indeces.  */
             if (idx <= hval2)
-                idx = htab->size + idx - hval2;
+                idx = lhtab.size + idx - hval2;
             else
                 idx -= hval2;
 
@@ -85,19 +86,19 @@ int search(rankedBigram_t *item, ACTION action, ENTRY **retval,
                 break;
 
             /* If entry is found use it. */
-            if (htab->table[idx].used == hval
-                && cmpBigramKey(item, htab->table[idx].entry.key) == 0) {
+            if (lhtab.table[idx].used == hval
+                && cmpBigramKey(item, lhtab.table[idx].entry.key) == 0) {
                 if (retval == NULL) {
                     /* Set errno to EINVAL, because 'retval' is a NULL pointer
                     (invalid pointer for returning a hash table ENTRY). */
                     errno = EINVAL;
                     return 0;
                 } else {
-                    *retval = &htab->table[idx].entry;
+                    *retval = &lhtab.table[idx].entry;
                     return 1;
                 }
             }
-        } while (htab->table[idx].used);
+        } while (lhtab.table[idx].used);
     }
 
     /* An empty bucket has been found. */
@@ -308,7 +309,7 @@ size_t insertBigram(rankedBigram_t *bigrams, rankedBigram_t *newBigram, size_t s
 }
 
 
-size_t rankBigrams(codecTables_t tables, size_t bigramsDsSz,
+size_t rankBigrams(const codecTables_t *tables, size_t bigramsDsSz,
                    rankedBigram_t *bigrams, size_t *numBigrams) {
     int currBigram = 0;
     size_t highestBigram = 0;
@@ -329,7 +330,7 @@ size_t rankBigrams(codecTables_t tables, size_t bigramsDsSz,
         }
         *numBigrams += 1;
         ENTRY *ep;
-        int search_ret = search(&(bigrams[currBigram]), FIND, &ep, &(tables.bpeRanks));
+        int search_ret = search(&(bigrams[currBigram]), FIND, &ep, &(tables->bpeRanks));
         if (search_ret) {
             rankedBigram_t *matchBigram = (rankedBigram_t *) &(*ep->data);
             bigrams[currBigram].rank = matchBigram->rank;
@@ -427,7 +428,7 @@ int scanRight(rankedBigram_t *bigrams, size_t start, size_t *max) {
 }
 
 
-size_t toBPE(codecTables_t tables, char *s, long long numchars, rankedBigram_t *bigrams) {
+size_t toBPE(const codecTables_t *tables, char *s, long long numchars, rankedBigram_t *bigrams) {
     int leftIdx, rightIdx;
     size_t numBigrams = 0;
     size_t bigrams_ct = initBPE(bigrams, s, numchars);
@@ -469,11 +470,11 @@ size_t toBPE(codecTables_t tables, char *s, long long numchars, rankedBigram_t *
 }
 
 
-size_t toUnicode(codecTables_t tables, const char *s, char **unicode, long long numchars) {
+size_t toUnicode(const codecTables_t *tables, const char *s, char **unicode, long long numchars) {
     *unicode = malloc(numchars * 2);
     char *dest = *unicode;
     for (int idx = 0; idx < numchars; idx++) {
-        uint16_t rune = tables.bytesToUnicode[s[idx]];
+        uint16_t rune = tables->bytesToUnicode[s[idx]];
         if (rune < 0x80) {
             *dest++ = (char) rune;
         } else {
@@ -486,7 +487,7 @@ size_t toUnicode(codecTables_t tables, const char *s, char **unicode, long long 
     return sz;
 }
 
-void SplitWords(codecTables_t tables, const char *s) {
+void SplitWords(const codecTables_t *tables, const char *s) {
     CalibrateRdtscTicks();
     uint64_t start_rdtsc, end_rdtsc;
     uint64_t host_cpu_ticks;
@@ -501,7 +502,7 @@ void SplitWords(codecTables_t tables, const char *s) {
     const char *s_ptr = s;
     rankedBigram_t bigrams[256];
     while (regex_status == 0) {
-        regex_status = regexec(&tables.pattern, s_ptr, 1, &match, 0);
+        regex_status = regexec(&tables->pattern, s_ptr, 1, &match, 0);
         char *unicode = NULL;
         size_t unicode_sz = toUnicode(tables, s_ptr, &unicode, match.rm_eo);
         token_ct += toBPE(tables, unicode, unicode_sz, (rankedBigram_t *) &bigrams);
@@ -546,7 +547,7 @@ enum CODEC_STATUS EncodeTextFile(const char *path) {
         return ERR_CORPUS_MALLOC;
     }
     fread(buffer, 1, length, f);
-    SplitWords(*codecTables, buffer);
+    SplitWords(codecTables, buffer);
     return CODEC_SUCCESS;
 }
 
