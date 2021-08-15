@@ -7,3 +7,6 @@
 [submodule "vendor/uthash"]
 	path = vendor/uthash
 	url = git@github.com:troydhanson/uthash.git
+[submodule "vendor/utf8proc"]
+	path = vendor/utf8proc
+	url = git@github.com:JuliaStrings/utf8proc.git
