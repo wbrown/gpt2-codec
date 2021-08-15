@@ -7,6 +7,7 @@
 #include <search_hsearch_r.h>
 #include <regex.h>
 #include <utlist.h>
+#include <uthash.h>
 
 #define isutf(c) (((c)&0xC0)!=0x80)
 
@@ -30,22 +31,30 @@ enum CODEC_STATUS {
     ERR_CORPUS_EMPTY
 };
 
+typedef struct {
+    char* id;                    /* key */
+    size_t numTokens;
+    UT_hash_handle hh;         /* makes this structure hashable */
+} TokenCacheEntry;
+
 struct codecTablesStruct {
     struct hsearch_data toToken;
     struct hsearch_data bpeRanks;
+    TokenCacheEntry *tokenCache;
     char *fromToken[65535];
     uint8_t unicodeToBytes[324];
     uint16_t bytesToUnicode[256];
     regex_t pattern;
 };
 
+
 typedef struct BPERankedPair {
     char *repr;
     uint16_t rank;
     uint64_t hash;
-    char *left;
+    const char *left;
     size_t left_len;
-    char *right;
+    const char *right;
     size_t right_len;
     struct BPERankedPair *next;
     struct BPERankedPair *prev;

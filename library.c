@@ -4,6 +4,8 @@
 #include <string.h>
 #include <regex.h>
 #include <stdbool.h>
+#include <wctype.h>
+#include <utf8proc/utf8proc.h>
 
 codecTables_t *codecTables;
 
@@ -63,17 +65,9 @@ unsigned int hashLookup(rankedBigram_t *item, ENTRY **retval,
         /* Further action might be required according to the action value. */
         if (lhtab.table[idx].used == hval
             && cmpBigramKey(item, lhtab.table[idx].entry.key) == 0) {
-            if (retval == NULL) {
-                /* Set errno to EINVAL, because 'retval' is a NULL pointer
-				(invalid pointer for returning a hash table ENTRY). */
-                errno = EINVAL;
-                *hash = hval;
-                return 0;
-            } else {
-                *retval = &lhtab.table[idx].entry;
-                *hash = hval;
-                return idx;
-            }
+            *retval = &lhtab.table[idx].entry;
+            *hash = hval;
+            return idx;
         }
 
         /* Second hash function, as suggested in [Knuth] */
@@ -95,17 +89,9 @@ unsigned int hashLookup(rankedBigram_t *item, ENTRY **retval,
             /* If entry is found use it. */
             if (lhtab.table[idx].used == hval
                 && cmpBigramKey(item, lhtab.table[idx].entry.key) == 0) {
-                if (retval == NULL) {
-                    /* Set errno to EINVAL, because 'retval' is a NULL pointer
-                    (invalid pointer for returning a hash table ENTRY). */
-                    errno = EINVAL;
-                    *hash = hval;
-                    return 0;
-                } else {
-                    *retval = &lhtab.table[idx].entry;
-                    *hash = hval;
-                    return idx;
-                }
+                *retval = &lhtab.table[idx].entry;
+                *hash = hval;
+                return idx;
             }
         } while (lhtab.table[idx].used);
     }
@@ -336,7 +322,7 @@ rankedBigram_t *rankBigrams(const codecTables_t *tables,
             (*numDups)++;
         }
     }
-    // printf("Number of bigrams: %zu\n", *numBigrams);
+    //printf("Number of bigrams: %zu\n", *numBigrams);
     // showBigrams(bigrams);
     return highestBigram;
 }
@@ -357,6 +343,8 @@ rankedBigram_t *initBPE(rankedBigram_t *bigrams,
     bigrams[0].rank = 0;
     bigrams[0].prev = NULL;
     bigrams[0].next = NULL;
+    DL_APPEND(head, &(bigrams[0]));
+
     if ((uint8_t) s[0] > 192) {
         c_idx += 2;
         bigrams[0].right = s + 2;
@@ -366,12 +354,19 @@ rankedBigram_t *initBPE(rankedBigram_t *bigrams,
         bigrams[0].right = s + 1;
         bigrams[0].left_len = 1;
     }
+    if (numBytes == c_idx - 1) {
+        bigrams[0].right_len = 0;
+        bigrams[0].right = NULL;
+        return head;
+    }
+
     if ((uint8_t) s[1] > 192) {
         bigrams[0].right_len = 2;
+    } else if ((uint8_t)s[1]==0) {
+        bigrams[0].right_len = 0;
     } else {
         bigrams[0].right_len = 1;
     }
-    DL_APPEND(head, &(bigrams[0]));
     for (; c_idx < numBytes; c_idx += 1) {
         DL_APPEND(head, &(bigrams[bigrams_ct]));
         bigrams[bigrams_ct].rank = 0;
@@ -411,8 +406,13 @@ bool mergeNeighboringBigrams(rankedBigram_t *head, rankedBigram_t *bigram) {
 }
 
 
-size_t toBPE(const codecTables_t *tables, const char *s, const size_t numBytes,
+size_t toBPE(codecTables_t *tables, const char *s, const size_t numBytes,
              rankedBigram_t *bigramsBuffer) {
+    TokenCacheEntry *cacheEntry;
+    /* HASH_FIND_STR(tables->tokenCache, s, cacheEntry);
+    if (cacheEntry != NULL) {
+        return cacheEntry->numTokens;
+    } */
     size_t numBigrams = 0;
     size_t numDups = 0;
     rankedBigram_t *bigrams = initBPE(bigramsBuffer, s, numBytes);
@@ -434,11 +434,33 @@ size_t toBPE(const codecTables_t *tables, const char *s, const size_t numBytes,
                 }
             }
         }
-        if (numBigrams <= 1) break;
         highestBigram = rankBigrams(tables, bigrams, &numDups, &numBigrams);
+        if (numBigrams <= 1) break;
     }
-    //showBigrams(bigrams);
-    return numBigrams;
+
+    rankedBigram_t *bigram;
+    // showBigrams(bigrams);
+    // printf("TOKENS: ");
+    size_t tokens_ct = 0;
+    DL_FOREACH(bigrams, bigram) {
+        if (bigram->rank != 65535) {
+            printf("|%.*s%.*s", (int)bigram->left_len, bigram->left,
+                   (int)bigram->right_len, bigram->right);
+            tokens_ct += 1;
+        } else {
+            printf("|%.*s", (int)bigram->left_len, bigram->left);
+            tokens_ct += 1;
+            if (bigram->next == NULL && bigram->right_len != 0) {
+                printf("|%.*s", (int)bigram->right_len, bigram->right);
+                tokens_ct += 1;
+            }
+        }
+    }
+    /* cacheEntry = (TokenCacheEntry *) malloc(sizeof *cacheEntry);
+    cacheEntry->numTokens = tokens_ct;
+    cacheEntry->id = strdup(s);
+    HASH_ADD_STR(tables->tokenCache, id, cacheEntry); */
+    return tokens_ct;
 }
 
 // ==========================================================================
@@ -501,6 +523,225 @@ void SplitWords(const codecTables_t *tables, const char *s) {
            host_cpu_ticks);
 }
 
+// UTF8PROC_CATEGORY_CN  = 0, /**< Other, not assigned */
+// UTF8PROC_CATEGORY_LU  = 1, /**< Letter, uppercase */
+// UTF8PROC_CATEGORY_LL  = 2, /**< Letter, lowercase */
+// UTF8PROC_CATEGORY_LT  = 3, /**< Letter, titlecase */
+// UTF8PROC_CATEGORY_LM  = 4, /**< Letter, modifier */
+// UTF8PROC_CATEGORY_LO  = 5, /**< Letter, other */
+// UTF8PROC_CATEGORY_MN  = 6, /**< Mark, nonspacing */
+// UTF8PROC_CATEGORY_MC  = 7, /**< Mark, spacing combining */
+// UTF8PROC_CATEGORY_ME  = 8, /**< Mark, enclosing */
+// UTF8PROC_CATEGORY_ND  = 9, /**< Number, decimal digit */
+// UTF8PROC_CATEGORY_NL = 10, /**< Number, letter */
+// UTF8PROC_CATEGORY_NO = 11, /**< Number, other */
+// UTF8PROC_CATEGORY_PC = 12, /**< Punctuation, connector */
+// UTF8PROC_CATEGORY_PD = 13, /**< Punctuation, dash */
+// UTF8PROC_CATEGORY_PS = 14, /**< Punctuation, open */
+// UTF8PROC_CATEGORY_PE = 15, /**< Punctuation, close */
+// UTF8PROC_CATEGORY_PI = 16, /**< Punctuation, initial quote */
+// UTF8PROC_CATEGORY_PF = 17, /**< Punctuation, final quote */
+// UTF8PROC_CATEGORY_PO = 18, /**< Punctuation, other */
+// UTF8PROC_CATEGORY_SM = 19, /**< Symbol, math */
+// UTF8PROC_CATEGORY_SC = 20, /**< Symbol, currency */
+// UTF8PROC_CATEGORY_SK = 21, /**< Symbol, modifier */
+// UTF8PROC_CATEGORY_SO = 22, /**< Symbol, other */
+// UTF8PROC_CATEGORY_ZS = 23, /**< Separator, space */
+// UTF8PROC_CATEGORY_ZL = 24, /**< Separator, line */
+// UTF8PROC_CATEGORY_ZP = 25, /**< Separator, paragraph */
+// UTF8PROC_CATEGORY_CC = 26, /**< Other, control */
+// UTF8PROC_CATEGORY_CF = 27, /**< Other, format */
+// UTF8PROC_CATEGORY_CS = 28, /**< Other, surrogate */
+// UTF8PROC_CATEGORY_CO = 29, /**< Other, private use */
+
+typedef struct {
+    bool apostrophe;
+    bool priorIsLiteralSpace;
+    bool priorIsUnicodeSpace;
+    bool priorIsNumber;
+    bool priorIsLetter;
+    bool priorIsOther;
+    size_t numLiteralSpaces;
+    size_t buffIdx;
+    size_t numTokens;
+    codecTables_t *codec;
+    char buffer[256];
+    rankedBigram_t bigrams[256];
+} SplitterState;
+
+void flushState(SplitterState *state) {
+    state->buffer[state->buffIdx] = '\0';
+    // printf("SPLIT: |%s|\n", state->buffer);
+
+    char *unicode = NULL;
+    size_t unicode_sz = toUnicode(state->codec,
+                                  state->buffer, &unicode,
+                                  state->buffIdx);
+    state->numTokens += toBPE(state->codec, unicode, unicode_sz,
+                              (rankedBigram_t *) &state->bigrams);
+    free(unicode);
+
+    state->apostrophe = false;
+    state->priorIsLiteralSpace = false;
+    state->priorIsUnicodeSpace = false;
+    state->priorIsNumber = false;
+    state->priorIsLetter = false;
+    state->priorIsOther = false;
+    state->numLiteralSpaces = 0;
+    state->buffIdx = 0;
+}
+
+int codePoint(int rune, void *inputState) {
+    SplitterState *state = (SplitterState *) inputState;
+    bool isLiteralSpace = false;
+    //printf("RUNE: %d TYPE: %s\n", rune, utf8proc_category_string(rune));
+    if (rune < 127) {
+        char charRune = (char) rune;
+        state->buffer[state->buffIdx] = charRune;
+        if (state->apostrophe) {
+            switch (charRune) {
+                case 's':
+                case 't':
+                case 'm':
+                case 'd':
+                    if (state->buffIdx == 1) {
+                        flushState(state);
+                        return rune;
+                    }
+                    state->apostrophe = false;
+                    break;
+                case 'l':
+                    if (state->buffIdx == 2 &&
+                        state->buffer[state->buffIdx - 1] == 'l') {
+                        flushState(state);
+                        return rune;
+                    }
+                    state->apostrophe = false;
+                    break;
+                case 'r':
+                case 'v':
+                    if (state->buffIdx != 1)
+                        state->apostrophe = false;
+                    break;
+                case 'e':
+                    if (state->buffIdx == 2) {
+                        flushState(state);
+                        return rune;
+                    }
+                default:
+                    state->apostrophe = false;
+            }
+        }
+        switch (charRune) {
+            case '\'':
+                if (state->buffIdx == 0) state->apostrophe = true;
+                return rune;
+            case ' ':
+                if (state->buffIdx != 0 && state->numLiteralSpaces == 0) {
+                    flushState(state);
+                    state->buffer[0] = charRune;
+                    state->buffIdx++;
+                    return rune;
+                } else if (state->buffIdx == state->numLiteralSpaces) {
+                    state->numLiteralSpaces++;
+                    isLiteralSpace = true;
+                }
+            default:
+                break;
+        }
+    }
+    bool isLetter = false, isNumber = false, isSpace = false, isOther = false;
+    utf8proc_int32_t unicodeCategory = utf8proc_category(rune);
+    switch (unicodeCategory) {
+        case UTF8PROC_CATEGORY_LU:
+        case UTF8PROC_CATEGORY_LL:
+        case UTF8PROC_CATEGORY_LT:
+        case UTF8PROC_CATEGORY_LM:
+        case UTF8PROC_CATEGORY_LO:
+            isLetter = true;
+            break;
+        case UTF8PROC_CATEGORY_ND:
+        case UTF8PROC_CATEGORY_NL:
+        case UTF8PROC_CATEGORY_NO:
+            isNumber = true;
+            break;
+        case UTF8PROC_CATEGORY_ZS:
+        case UTF8PROC_CATEGORY_ZL:
+        case UTF8PROC_CATEGORY_ZP:
+            isSpace = true;
+            break;
+        default:
+            isOther = true;
+    }
+    if ((isLetter && state->priorIsNumber) ||   // letters -> numbers
+        (isNumber && state->priorIsLetter) ||   // numbers -> letters
+        ((isLetter || isNumber) &&              // litSpace -> numbers/letters
+         state->priorIsLiteralSpace &&
+         state->buffIdx > 1) ||
+        ((isLetter || isNumber || isOther) &&   // unicodeSpace ->
+         state->priorIsUnicodeSpace) ||         //   non-unicodeSpace
+         ((isLetter || isNumber) &&             // other -> letter/number
+          state->priorIsOther) ||
+        ((isSpace || isOther) &&                // letter/number ->
+         (state->priorIsLetter ||               //   space / other
+         state->priorIsNumber))) {
+        flushState(state);
+    }
+    state->buffIdx += utf8proc_encode_char(
+            rune, (utf8proc_uint8_t *)
+                    &state->buffer[state->buffIdx]);
+    state->priorIsLiteralSpace = isLiteralSpace;
+    state->priorIsUnicodeSpace = isSpace;
+    state->priorIsLetter = isLetter;
+    state->priorIsNumber = isNumber;
+    state->priorIsOther = isOther;
+    return rune;
+}
+
+int scanWords(const unsigned char *s, codecTables_t *tables) {
+    unsigned char *dst = malloc(strlen((const char *) s));
+    CalibrateRdtscTicks();
+    uint64_t start_rdtsc, end_rdtsc;
+    uint64_t host_cpu_ticks;
+    double host_cpu_ns;
+    double host_cpu_us;
+    double host_cpu_s;
+    double tokens_per_us;
+    start_rdtsc = RDTSC();
+    SplitterState state = {false,
+                           false,
+                           false,
+                           false,
+                           false,
+                           false,
+                           0,
+                           0,
+                           0,
+                           tables,
+                           {},
+                           {}};
+    utf8proc_map_custom(s,
+                        (long) strlen((const char *) s),
+                        &dst,
+                        0,
+                        codePoint,
+                        &state);
+    end_rdtsc = RDTSC();
+    // Calculate rates
+    host_cpu_ticks = end_rdtsc - start_rdtsc;
+    host_cpu_ns = host_cpu_ticks / g_TicksPerNanoSec;
+    host_cpu_us = host_cpu_ns / 1000;
+    host_cpu_s = host_cpu_ns / 1000000000;
+    tokens_per_us = state.numTokens / host_cpu_us;
+    printf("%.2lf token/µs, %zu tokens, %.4f seconds, %llu ticks\n",
+           tokens_per_us,
+           state.numTokens,
+           host_cpu_s,
+           host_cpu_ticks);
+    return 0;
+}
+
+
 enum CODEC_STATUS EncodeTextFile(const char *path) {
     if (codecTables == NULL) {
         InitializeGPT2Codec();
@@ -524,14 +765,42 @@ enum CODEC_STATUS EncodeTextFile(const char *path) {
         return ERR_CORPUS_MALLOC;
     }
     fread(buffer, 1, length, f);
-    SplitWords(codecTables, buffer);
+    scanWords(buffer, codecTables);
+    // SplitWords(codecTables, buffer);
     return CODEC_SUCCESS;
 }
+
+
+/*
+
+int nextWord(char *s) {
+    utf8proc_custom_func
+    if (s == NULL || *s == '\0') return -1;
+    switch (*s) {
+        case '\'':
+            s++;
+            switch (*s) {
+                case 's':
+                case 't':
+                case 'm':
+                case 'd':
+                    return 0;
+                case 'r':
+                case 'v':
+                    s++;
+                    if (*s == 'e') return 0;
+            }
+        case ' ':
+
+
+    }
+} */
 
 enum CODEC_STATUS InitializeGPT2Codec() {
     readEncoderDefinitions("resources/encoder.json", &codecTables);
     readBpeVocabulary("resources/vocab.bpe", &codecTables);
     buildUnicodeByteTable(&codecTables);
+    codecTables->tokenCache = NULL;
     int result = regcomp(
             &(codecTables->pattern),
             "'s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^[:space:][:alpha:][:digit:]]+|[[:space:]]+",

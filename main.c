@@ -6,15 +6,23 @@
 
 int main() {
     InitializeGPT2Codec();
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
-    EncodeTextFile("frankenstein.txt");
+    EncodeTextFile("test.txt");
+    // EncodeTextFile("frankenstein.txt");
+    // EncodeTextFile("frankenstein.txt");
+    // EncodeTextFile("frankenstein.txt");
+    // EncodeTextFile("frankenstein.txt");
+    // EncodeTextFile("frankenstein.txt");
+    // EncodeTextFile("frankenstein.txt");
+    // EncodeTextFile("frankenstein.txt");
+    // EncodeTextFile("frankenstein.txt");
+    // EncodeTextFile("frankenstein.txt");
+    /* EncodeTextFile("enwiki8.html");
+    EncodeTextFile("enwiki8.html");
+    EncodeTextFile("enwiki8.html");
+    EncodeTextFile("enwiki8.html");
+    EncodeTextFile("enwiki8.html");
+    EncodeTextFile("enwiki8.html");
+    EncodeTextFile("enwiki8.html");
+    EncodeTextFile("enwiki8.html");
+    EncodeTextFile("enwiki8.html"); */
 }
