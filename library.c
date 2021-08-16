@@ -10,6 +10,35 @@
 codecTables_t *codecTables;
 
 // ==========================================================================
+// Escape print output
+// ==========================================================================
+
+void EscapePrint(int ch) {
+    // Delete or adjust these 2 arrays per code's goals
+    // All simple-escape-sequence C11 6.4.4.4
+    static const char *escapev = "\a\b\t\n\v\f\r\"\'\?\\";
+    static const char *escapec = "abtnvfr\"\'\?\\";
+    char *p = strchr(escapev, ch);
+    if (p && *p) {
+        printf("\\%c", escapec[p - escapev]);
+    } else if (isprint(ch)) {
+        fputc(ch, stdout);
+    } else {
+        // Use octal as hex is problematic reading back
+        printf("\\%03o", ch);
+    }
+}
+
+void EscapePrints(const char *data, int length) {
+    if (length == 0) {
+        length = strlen(data);
+    }
+    while (length-- > 0) {
+        EscapePrint((unsigned char) *data++);
+    }
+}
+
+// ==========================================================================
 // Hashtable implementation specifically for bigrams
 // ==========================================================================
 
@@ -332,12 +361,32 @@ void u8_inc(char *s, int *i) {
             isutf(s[++(*i)]) || ++(*i));
 }
 
-rankedBigram_t *initBPE(rankedBigram_t *bigrams,
-                        const char *s, const size_t numBytes) {
+size_t encodeCharBPE(codecTables_t *tables, char **ch, char **dest) {
+    uint16_t rune = tables->bytesToUnicode[**ch];
+    *ch = *ch + 1;
+    if (rune == 0) {
+        return 0;
+    } else if (rune < 0x80) {
+        **dest = (char) rune;
+        *dest = *dest + 1;
+        return 1;
+    } else {
+        **dest = (char) ((rune >> 6) | 0xC0);
+        *dest = *dest + 1;
+        **dest = (char) ((rune & 0x3F) | 0x80);
+        *dest = *dest + 1;
+        return 2;
+    }
+}
+
+
+rankedBigram_t *initBPE(codecTables_t *tables, rankedBigram_t *bigrams,
+                        const char *s, const size_t numBytes, char *encoded) {
+    char *inputPtr = (char *) s;
+    char *endPtr = (char *) s + numBytes;
     rankedBigram_t *head = NULL;
     size_t bigrams_ct = 1;
-    int c_idx = 1;
-    bigrams[0].left = s;
+    bigrams[0].left = encoded;
     bigrams[0].hash = 0;
     bigrams[0].repr = NULL;
     bigrams[0].rank = 0;
@@ -345,44 +394,29 @@ rankedBigram_t *initBPE(rankedBigram_t *bigrams,
     bigrams[0].next = NULL;
     DL_APPEND(head, &(bigrams[0]));
 
-    if ((uint8_t) s[0] > 192) {
-        c_idx += 2;
-        bigrams[0].right = s + 2;
-        bigrams[0].left_len = 2;
-    } else {
-        c_idx += 1;
-        bigrams[0].right = s + 1;
-        bigrams[0].left_len = 1;
-    }
-    if (numBytes == c_idx - 1) {
+    size_t encodedLen = encodeCharBPE(tables, &inputPtr, &encoded);
+    bigrams[0].left_len = encodedLen;
+    if (inputPtr >= endPtr) {
         bigrams[0].right_len = 0;
         bigrams[0].right = NULL;
         return head;
-    }
-
-    if ((uint8_t) s[1] > 192) {
-        bigrams[0].right_len = 2;
-    } else if ((uint8_t)s[1]==0) {
-        bigrams[0].right_len = 0;
     } else {
-        bigrams[0].right_len = 1;
+        bigrams[0].right = encoded;
+        bigrams[0].right_len = encodeCharBPE(tables, &inputPtr, &encoded);
     }
-    for (; c_idx < numBytes; c_idx += 1) {
+    for (; inputPtr < endPtr;) {
         DL_APPEND(head, &(bigrams[bigrams_ct]));
+        bigrams[bigrams_ct].right = encoded;
+        encodedLen = encodeCharBPE(tables, &inputPtr, &encoded);
+        bigrams[bigrams_ct].right_len = encodedLen;
         bigrams[bigrams_ct].rank = 0;
         bigrams[bigrams_ct].left = bigrams[bigrams_ct - 1].right;
         bigrams[bigrams_ct].left_len = bigrams[bigrams_ct - 1].right_len;
-        bigrams[bigrams_ct].right = &(s[c_idx]);
         bigrams[bigrams_ct].repr = NULL;
         bigrams[bigrams_ct].hash = 0;
-        if ((uint8_t) s[c_idx] > 192) {
-            bigrams[bigrams_ct].right_len = 2;
-            c_idx += 1;
-        } else {
-            bigrams[bigrams_ct].right_len = 1;
-        }
         bigrams_ct++;
     }
+    *encoded = '\0';
     return head;
 }
 
@@ -407,7 +441,7 @@ bool mergeNeighboringBigrams(rankedBigram_t *head, rankedBigram_t *bigram) {
 
 
 size_t toBPE(codecTables_t *tables, const char *s, const size_t numBytes,
-             rankedBigram_t *bigramsBuffer) {
+             rankedBigram_t *bigramsBuffer, char *transcode) {
     TokenCacheEntry *cacheEntry;
     /* HASH_FIND_STR(tables->tokenCache, s, cacheEntry);
     if (cacheEntry != NULL) {
@@ -415,9 +449,11 @@ size_t toBPE(codecTables_t *tables, const char *s, const size_t numBytes,
     } */
     size_t numBigrams = 0;
     size_t numDups = 0;
-    rankedBigram_t *bigrams = initBPE(bigramsBuffer, s, numBytes);
+    rankedBigram_t *bigrams = initBPE(tables, bigramsBuffer, s, numBytes,
+                                      transcode);
     rankedBigram_t *highestBigram = rankBigrams(tables, bigrams,
                                                 &numDups, &numBigrams);
+    // showBigrams(bigrams);
     while (highestBigram->rank != 65535 && highestBigram->rank != 0 &&
            numBigrams > 1) {
         rankedBigram_t *bigram;
@@ -443,23 +479,32 @@ size_t toBPE(codecTables_t *tables, const char *s, const size_t numBytes,
     // printf("TOKENS: ");
     size_t tokens_ct = 0;
     DL_FOREACH(bigrams, bigram) {
+        printf("TOKEN: |");
         if (bigram->rank != 65535) {
-            printf("|%.*s%.*s", (int)bigram->left_len, bigram->left,
-                   (int)bigram->right_len, bigram->right);
+            /* printf("|%.*s%.*s", (int)bigram->left_len, bigram->left,
+                   (int)bigram->right_len, bigram->right); */
+            EscapePrints(bigram->left, bigram->left_len);
+            EscapePrints(bigram->right, bigram->right_len);
+            printf("|");
             tokens_ct += 1;
         } else {
-            printf("|%.*s", (int)bigram->left_len, bigram->left);
+            EscapePrints(bigram->left, bigram->left_len);
+            //printf("|%.*s", (int)bigram->left_len, bigram->left);
             tokens_ct += 1;
+            printf("|");
             if (bigram->next == NULL && bigram->right_len != 0) {
-                printf("|%.*s", (int)bigram->right_len, bigram->right);
+                EscapePrints(bigram->right, bigram->right_len);
+                //printf("|%.*s", (int)bigram->right_len, bigram->right);
                 tokens_ct += 1;
+                printf("|");
             }
         }
+        printf("\n");
     }
-    /* cacheEntry = (TokenCacheEntry *) malloc(sizeof *cacheEntry);
+    cacheEntry = (TokenCacheEntry *) malloc(sizeof *cacheEntry);
     cacheEntry->numTokens = tokens_ct;
     cacheEntry->id = strdup(s);
-    HASH_ADD_STR(tables->tokenCache, id, cacheEntry); */
+    // HASH_ADD_STR(tables->tokenCache, id, cacheEntry);
     return tokens_ct;
 }
 
@@ -476,8 +521,8 @@ size_t toUnicode(const codecTables_t *tables, const char *s, char **unicode,
         if (rune < 0x80) {
             *dest++ = (char) rune;
         } else {
-            *dest++ = (rune >> 6) | 0xC0;
-            *dest++ = (rune & 0x3F) | 0x80;
+            *dest++ = (char) ((rune >> 6) | 0xC0);
+            *dest++ = (char) ((rune & 0x3F) | 0x80);
         }
     }
     *dest = '\0';
@@ -485,7 +530,7 @@ size_t toUnicode(const codecTables_t *tables, const char *s, char **unicode,
     return sz;
 }
 
-void SplitWords(const codecTables_t *tables, const char *s) {
+void SplitWords(codecTables_t *tables, const char *s) {
     CalibrateRdtscTicks();
     uint64_t start_rdtsc, end_rdtsc;
     uint64_t host_cpu_ticks;
@@ -499,13 +544,11 @@ void SplitWords(const codecTables_t *tables, const char *s) {
     size_t token_ct = 0;
     const char *s_ptr = s;
     rankedBigram_t bigrams[256];
+    char unicode[256];
     while (regex_status == 0) {
         regex_status = regexec(&tables->pattern, s_ptr, 1, &match, 0);
-        char *unicode = NULL;
-        size_t unicode_sz = toUnicode(tables, s_ptr, &unicode, match.rm_eo);
-        token_ct += toBPE(tables, unicode, unicode_sz,
-                          (rankedBigram_t *) &bigrams);
-        free(unicode);
+        token_ct += toBPE(tables, s_ptr, match.rm_eo,
+                          (rankedBigram_t *) &bigrams, unicode);
         //printf("%.*s\n", match.rm_eo, s_ptr);
         s_ptr += match.rm_eo;
     }
@@ -560,26 +603,30 @@ typedef struct {
     bool priorIsUnicodeSpace;
     bool priorIsNumber;
     bool priorIsLetter;
+    bool priorIsNewline;
     bool priorIsOther;
     size_t numLiteralSpaces;
+    size_t numSpaces;
     size_t buffIdx;
     size_t numTokens;
+    size_t inputSize;
+    size_t bytesScanned;
     codecTables_t *codec;
     char buffer[256];
+    char unicode[256];
     rankedBigram_t bigrams[256];
 } SplitterState;
 
+
 void flushState(SplitterState *state) {
     state->buffer[state->buffIdx] = '\0';
-    // printf("SPLIT: |%s|\n", state->buffer);
-
-    char *unicode = NULL;
-    size_t unicode_sz = toUnicode(state->codec,
-                                  state->buffer, &unicode,
-                                  state->buffIdx);
-    state->numTokens += toBPE(state->codec, unicode, unicode_sz,
-                              (rankedBigram_t *) &state->bigrams);
-    free(unicode);
+    /* printf("SPLIT: |");
+    EscapePrints(state->buffer, 0);
+    printf("|\n"); */
+    state->numTokens += toBPE(state->codec, state->buffer, state->buffIdx,
+                              (rankedBigram_t *) &state->bigrams,
+                              state->unicode);
+    // fflush(stdout);
 
     state->apostrophe = false;
     state->priorIsLiteralSpace = false;
@@ -587,13 +634,17 @@ void flushState(SplitterState *state) {
     state->priorIsNumber = false;
     state->priorIsLetter = false;
     state->priorIsOther = false;
+    state->priorIsNewline = false;
+    state->numSpaces = 0;
     state->numLiteralSpaces = 0;
     state->buffIdx = 0;
 }
 
 int codePoint(int rune, void *inputState) {
     SplitterState *state = (SplitterState *) inputState;
+    bool isSpace = false;
     bool isLiteralSpace = false;
+    bool isNewline = false;
     //printf("RUNE: %d TYPE: %s\n", rune, utf8proc_category_string(rune));
     if (rune < 127) {
         char charRune = (char) rune;
@@ -646,12 +697,20 @@ int codePoint(int rune, void *inputState) {
                     state->numLiteralSpaces++;
                     isLiteralSpace = true;
                 }
+            case '\f':
+            case '\r':
+            case '\v':
+            case '\t':
+            case '\n':
+                isSpace = true;
+                state->numSpaces++;
             default:
                 break;
         }
     }
-    bool isLetter = false, isNumber = false, isSpace = false, isOther = false;
+    bool isLetter = false, isNumber = false, isOther = false;
     utf8proc_int32_t unicodeCategory = utf8proc_category(rune);
+    // printf("%s\n", utf8proc_category_string(rune));
     switch (unicodeCategory) {
         case UTF8PROC_CATEGORY_LU:
         case UTF8PROC_CATEGORY_LL:
@@ -670,6 +729,8 @@ int codePoint(int rune, void *inputState) {
         case UTF8PROC_CATEGORY_ZP:
             isSpace = true;
             break;
+        case UTF8PROC_CATEGORY_CC:
+            if (isSpace) break;
         default:
             isOther = true;
     }
@@ -680,26 +741,38 @@ int codePoint(int rune, void *inputState) {
          state->buffIdx > 1) ||
         ((isLetter || isNumber || isOther) &&   // unicodeSpace ->
          state->priorIsUnicodeSpace) ||         //   non-unicodeSpace
-         ((isLetter || isNumber) &&             // other -> letter/number
-          state->priorIsOther) ||
+        ((isLetter || isNumber) &&             // other -> letter/number
+         state->priorIsOther) ||
+        (isSpace && state->priorIsOther) ||
         ((isSpace || isOther) &&                // letter/number ->
          (state->priorIsLetter ||               //   space / other
-         state->priorIsNumber))) {
+          state->priorIsNumber)) ||
+        (isSpace &&
+         (state->priorIsLetter ||
+          state->priorIsNumber ||
+          (state->priorIsUnicodeSpace &&
+           state->numSpaces == 3)))) // newlines
+    {
         flushState(state);
     }
-    state->buffIdx += utf8proc_encode_char(
+    size_t numBytes = utf8proc_encode_char(
             rune, (utf8proc_uint8_t *)
                     &state->buffer[state->buffIdx]);
+    state->buffIdx += numBytes;
     state->priorIsLiteralSpace = isLiteralSpace;
     state->priorIsUnicodeSpace = isSpace;
     state->priorIsLetter = isLetter;
     state->priorIsNumber = isNumber;
     state->priorIsOther = isOther;
-    return rune;
+    state->priorIsNewline = isNewline;
+    state->bytesScanned += numBytes;
+    return 0;
 }
 
 int scanWords(const unsigned char *s, codecTables_t *tables) {
-    unsigned char *dst = malloc(strlen((const char *) s));
+    // printf("\nscanWords called\n");
+    // printf("%s\n", s);
+    unsigned char *dst;
     CalibrateRdtscTicks();
     uint64_t start_rdtsc, end_rdtsc;
     uint64_t host_cpu_ticks;
@@ -708,24 +781,31 @@ int scanWords(const unsigned char *s, codecTables_t *tables) {
     double host_cpu_s;
     double tokens_per_us;
     start_rdtsc = RDTSC();
+    size_t numBytes = strlen((const char *) s);
     SplitterState state = {false,
                            false,
                            false,
                            false,
                            false,
                            false,
+                           false,
                            0,
                            0,
+                           0,
+                           0,
+                           numBytes,
                            0,
                            tables,
                            {},
                            {}};
-    utf8proc_map_custom(s,
-                        (long) strlen((const char *) s),
-                        &dst,
-                        0,
-                        codePoint,
-                        &state);
+    utf8proc_decompose_custom(s,
+                              (long) numBytes,
+                              NULL,
+                              0,
+                              0,
+                              codePoint,
+                              &state);
+    flushState(&state);
     end_rdtsc = RDTSC();
     // Calculate rates
     host_cpu_ticks = end_rdtsc - start_rdtsc;
@@ -733,7 +813,7 @@ int scanWords(const unsigned char *s, codecTables_t *tables) {
     host_cpu_us = host_cpu_ns / 1000;
     host_cpu_s = host_cpu_ns / 1000000000;
     tokens_per_us = state.numTokens / host_cpu_us;
-    printf("%.2lf token/µs, %zu tokens, %.4f seconds, %llu ticks\n",
+    printf("\n%.2lf token/µs, %zu tokens, %.4f seconds, %llu ticks\n",
            tokens_per_us,
            state.numTokens,
            host_cpu_s,
